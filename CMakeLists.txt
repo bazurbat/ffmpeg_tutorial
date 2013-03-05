@@ -6,17 +6,18 @@ set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_C_FLAGS "-std=c99 -Wall -fdiagnostics-show-option")
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GLIB REQUIRED glib-2.0)
+#pkg_check_modules(GLIB REQUIRED glib-2.0)
 pkg_check_modules(FFMPEG REQUIRED libavformat libavcodec)
+find_package(SDL REQUIRED)
 
 include_directories(
-    ${GLIB_INCLUDE_DIRS}
     ${FFMPEG_INCLUDE_DIRS}
+    ${SDL_INCLUDE_DIR}
 )
 
-add_executable(tutorial01 tutorial01.c)
-
-target_link_libraries(tutorial01
-    ${GLIB_LDFLAGS}
-    ${FFMPEG_LDFLAGS}
-)
+foreach(num RANGE 1 1)
+    add_executable(tutorial0${num} tutorial0${num}.c)
+    target_link_libraries(tutorial0${num}
+        ${FFMPEG_LDFLAGS}
+        ${SDL_LIBRARY})
+endforeach(num)
