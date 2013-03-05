@@ -1,111 +1,154 @@
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
-#include <stdio.h>
+#include <stdint.h>
+
+typedef struct
+{
+    AVCodecContext *codec;
+    int stream_index;
+
+    AVFrame *frame;
+    int got_frame;
+
+    uint8_t *data[4];
+    int linesize[4];
+    int bufsize;
+
+    FILE *file;
+} DecodingContext;
+
+static int process_packet(AVPacket *pkt, DecodingContext *ctx)
+{
+    AVCodecContext *codec = ctx->codec;
+    AVFrame *frame = ctx->frame;
+
+    if (pkt->stream_index == ctx->stream_index)
+    {
+        if (avcodec_decode_video2(codec, frame, &ctx->got_frame, pkt) < 0)
+        {
+            av_log (NULL, AV_LOG_ERROR, "Error decoding video frame\n");
+            return -1;
+        }
+
+        if (ctx->got_frame)
+        {
+            av_image_copy(ctx->data, ctx->linesize,
+                          (const uint8_t **)frame->data, frame->linesize,
+                          codec->pix_fmt, codec->width, codec->height);
+
+            fwrite(ctx->data[0], 1, ctx->bufsize, ctx->file);
+        }
+    }
+
+    return 0;
+}
 
 int main(int argc, char *argv[])
 {
-    if (argc < 2)
+    if (argc < 3)
     {
-        printf ("Please provide a movie file\n");
+        printf ("Usage: %s <src_filename> <dst_filename>\n", argv[0]);
         return -1;
     }
 
-    const char *filename = argv[1];
+    const char *src_filename = argv[1];
+    const char *dst_filename = argv[2];
 
     av_register_all();
 
-    AVFormatContext *format_context = NULL;
-    if (avformat_open_input (&format_context, filename, NULL, NULL) < 0)
+    AVFormatContext *format_ctx = NULL;
+    if (avformat_open_input (&format_ctx, src_filename, NULL, NULL) < 0)
     {
         av_log (NULL, AV_LOG_ERROR, "Could not open input file\n");
         return -1;
     }
 
-    if (avformat_find_stream_info (format_context, NULL) < 0)
+    if (avformat_find_stream_info (format_ctx, NULL) < 0)
     {
         av_log (NULL, AV_LOG_ERROR, "Could not find stream information\n");
         goto end;
     }
 
-    av_dump_format (format_context, 0, argv[1], 0);
+    av_dump_format (format_ctx, 0, src_filename, 0);
 
-    int video_stream_idx = -1;
-    if ((video_stream_idx = av_find_best_stream (format_context,
-                                    AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0)) < 0)
+    DecodingContext ctx = {0};
+
+    AVCodec *decoder = NULL;
+    ctx.stream_index = av_find_best_stream (format_ctx, AVMEDIA_TYPE_VIDEO,
+                                            -1, -1, &decoder, 0);
+    if (ctx.stream_index < 0)
     {
-        av_log (NULL, AV_LOG_ERROR, "Could not find best stream");
+        av_log (NULL, AV_LOG_ERROR, "Could not find the best stream\n");
         goto end;
     }
 
-    AVCodecContext *codec_ctx =
-            format_context->streams[video_stream_idx]->codec;
-
-    AVCodec *codec = avcodec_find_decoder (codec_ctx->codec_id);
-    if (!codec)
-    {
-        av_log (NULL, AV_LOG_ERROR, "Could not find codec\n");
-        goto end;
-    }
-
-    if (avcodec_open2 (codec_ctx, codec, NULL) < 0)
+    ctx.codec = format_ctx->streams[ctx.stream_index]->codec;
+    if (avcodec_open2 (ctx.codec, decoder, NULL) < 0)
     {
         av_log (NULL, AV_LOG_ERROR, "Could not open codec\n");
         goto end;
     }
 
-    AVFrame *frame = avcodec_alloc_frame ();
-
-    uint8_t *video_dst_data[4] = {0};
-    int video_dst_linesize[4] = {0};
-    int ret = av_image_alloc (video_dst_data, video_dst_linesize,
-                              codec_ctx->width, codec_ctx->height,
-                              codec_ctx->pix_fmt, 1);
-    if (ret < 0)
+    ctx.frame = avcodec_alloc_frame ();
+    if (!ctx.frame)
     {
-        av_log (NULL, AV_LOG_ERROR, "Could not allocate image\n");
+        av_log (NULL, AV_LOG_ERROR, "Could not allocate video frame\n");
         goto end;
     }
 
-    int video_dst_bufsize = ret;
-    AVPacket packet;
-    int got_frame;
-    int i=0;
-    while (av_read_frame (format_context, &packet) >= 0)
+    ctx.bufsize = av_image_alloc (ctx.data, ctx.linesize,
+                                  ctx.codec->width, ctx.codec->height,
+                                  ctx.codec->pix_fmt, 1);
+    if (ctx.bufsize < 0)
     {
-        if(packet.stream_index == video_stream_idx)
-        {
-            avcodec_decode_video2 (codec_ctx, frame, &got_frame, &packet);
-
-            if(got_frame)
-            {
-                av_image_copy (video_dst_data, video_dst_linesize,
-                              (const uint8_t **)(frame->data), frame->linesize,
-                              codec_ctx->pix_fmt, codec_ctx->width, codec_ctx->height);
-
-                if(++i<=5)
-                {
-//                    SaveFrame(pFrameRGB, codec_ctx->width, codec_ctx->height, i);
-                }
-            }
-        }
-
-        // Free the packet that was allocated by av_read_frame
-        av_free_packet (&packet);
+        av_log (NULL, AV_LOG_ERROR, "Could not allocate video buffer\n");
+        goto end;
     }
 
+    ctx.file = fopen (dst_filename, "wb");
+    if (!ctx.file)
+    {
+        av_log (NULL, AV_LOG_ERROR, "Could not open output file\n");
+        goto end;
+    }
+
+    AVPacket pkt =
+    {
+        .data = NULL,
+        .size = 0
+    };
+
+    while (av_read_frame (format_ctx, &pkt) >= 0)
+    {
+        process_packet (&pkt, &ctx);
+
+        av_free_packet (&pkt);
+    }
+
+    // flush cached frames
+    pkt.data = NULL;
+    pkt.size = 0;
+    do
+    {
+        process_packet(&pkt, &ctx);
+    }
+    while (ctx.got_frame);
+
+    av_log (NULL, AV_LOG_INFO, "ffplay -f rawvideo -pix_fmt %s -video_size %dx%d %s\n",
+            av_get_pix_fmt_name (ctx.codec->pix_fmt),
+            ctx.codec->width, ctx.codec->height, dst_filename);
+
 end:
-
-    // Free the RGB image
-//    av_free(buffer);
-//    av_free(pFrameRGB);
-
-    if (frame)
-        av_free(frame);
-    if (codec_ctx)
-        avcodec_close(codec_ctx);
-    if (format_context)
-        avformat_close_input (&format_context);
+    av_free_packet (&pkt);
+    av_free (ctx.frame);
+    av_free (ctx.data[0]);
+    if (ctx.file)
+        fclose (ctx.file);
+    if (ctx.codec)
+        avcodec_close (ctx.codec);
+    if (format_ctx)
+        avformat_close_input (&format_ctx);
 
     return 0;
 }
