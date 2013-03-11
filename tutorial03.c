@@ -3,13 +3,20 @@
 #include <libavutil/imgutils.h>
 #include <SDL.h>
 #include <SDL_thread.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 
 #define SDL_AUDIO_BUFFER_SIZE 1024
 
 int quit = 0;
+
+void signal_handler (int signum)
+{
+    quit = 1;
+}
 
 typedef struct DecodingContext
 {
@@ -180,7 +187,7 @@ static int process_packet(AVPacket *pkt, DecodingContext *ctx)
     return 0;
 }
 
-int decode_audio_frame (DecodingContext *ctx, uint8_t *buf)
+int decode_audio_frame (DecodingContext *ctx, uint8_t **buf)
 {
     static AVPacket pkt, cur_pkt;
     static AVFrame *frame;
@@ -212,7 +219,7 @@ int decode_audio_frame (DecodingContext *ctx, uint8_t *buf)
             pkt.data += decoded_bytes;
             pkt.size -= decoded_bytes;
 
-            buf = frame->data[0];
+            *buf = frame->data[0];
 
             return av_samples_get_buffer_size(NULL,
                                               frame->channels,
@@ -238,46 +245,45 @@ int decode_audio_frame (DecodingContext *ctx, uint8_t *buf)
 
 void audio_callback (void *userdata, Uint8 *stream, int len)
 {
+    static uint8_t silence_buf[SDL_AUDIO_BUFFER_SIZE] = {0};
+    static uint8_t *buf = NULL;
+    static size_t buf_size = 0;
+    static size_t buf_index = 0;
+
     DecodingContext *ctx = userdata;
-    int len1, audio_size;
+    int send_len, decoded_size;
 
-    static uint8_t audio_buf[(AVCODEC_MAX_AUDIO_FRAME_SIZE * 3) / 2];
-    static unsigned int audio_buf_size = 0;
-    static int audio_buf_index = 0;
-
-    while (len > 0)
+    while (len > 0 && !quit)
     {
-        if (audio_buf_index >= audio_buf_size)
+        if (buf_index >= buf_size)
         {
-            audio_size = decode_audio_frame (ctx, audio_buf);
-            if (audio_size < 0)
+            decoded_size = decode_audio_frame (ctx, &buf);
+            if (decoded_size < 0)
             {
                 av_log (NULL, AV_LOG_WARNING, "Could not decode audio frame");
-                audio_buf_size = 1024;
-                memset(audio_buf, 0, audio_buf_size);
+                buf = silence_buf;
+                buf_size = sizeof silence_buf;
             }
             else
             {
-                audio_buf_size = audio_size;
+                buf_size = decoded_size;
             }
 
-            audio_buf_index = 0;
+            buf_index = 0;
         }
 
-        len1 = audio_buf_size - audio_buf_index;
+        send_len = buf_size - buf_index;
 
-        if (len1 > len)
+        if (send_len > len)
         {
-            len1 = len;
+            send_len = len;
         }
 
-        memcpy (stream, audio_buf + audio_buf_index, len1);
-        len -= len1;
-        stream += len1;
-        audio_buf_index += len1;
+        memcpy (stream, buf + buf_index, send_len);
+        len -= send_len;
+        stream += send_len;
+        buf_index += send_len;
     }
-
-    av_log (NULL, AV_LOG_INFO, "aq %d\n", s);
 }
 
 int main(int argc, char *argv[])
@@ -287,6 +293,9 @@ int main(int argc, char *argv[])
         printf ("Usage: %s <filename>\n", argv[0]);
         return -1;
     }
+
+    signal (SIGINT, signal_handler);
+    signal (SIGTERM, signal_handler);
 
     const char *src_filename = argv[1];
 
