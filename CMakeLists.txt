@@ -15,8 +15,8 @@ include_directories(
     ${SDL_INCLUDE_DIR}
 )
 
-foreach(num RANGE 1 3)
-    add_executable(tutorial0${num} tutorial0${num}.c)
+foreach(num RANGE 1 4)
+    add_executable(tutorial0${num} tutorial0${num}.c packet_queue.c)
     target_link_libraries(tutorial0${num}
         ${FFMPEG_LDFLAGS}
         ${SDL_LIBRARY})
