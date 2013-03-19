@@ -89,6 +89,27 @@ int packet_queue_get (PacketQueue *q, AVPacket *pkt, bool block)
     return ret;
 }
 
+void packet_queue_flush (PacketQueue *q)
+{
+    AVPacketList *node, *next_node;
+
+    SDL_LockMutex (q->mutex);
+
+    for (node = q->first_pkt; node != NULL; node = next_node)
+    {
+        next_node = node->next;
+        av_free_packet (&node->pkt);
+        av_freep (&node);
+    }
+
+    q->first_pkt = NULL;
+    q->last_pkt = NULL;
+    q->nb_packets = 0;
+    q->size = 0;
+
+    SDL_UnlockMutex (q->mutex);
+}
+
 void packet_queue_stop (PacketQueue *q)
 {
     SDL_LockMutex (q->mutex);
@@ -96,6 +117,5 @@ void packet_queue_stop (PacketQueue *q)
     q->stop_request = true;
 
     SDL_CondSignal (q->cond);
-
     SDL_UnlockMutex (q->mutex);
 }

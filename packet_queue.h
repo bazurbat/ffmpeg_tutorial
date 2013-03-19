@@ -24,6 +24,8 @@ int packet_queue_put (PacketQueue *q, AVPacket *pkt);
 
 int packet_queue_get (PacketQueue *q, AVPacket *pkt, bool block);
 
+void packet_queue_flush (PacketQueue *q);
+
 void packet_queue_stop (PacketQueue *q);
 
 #endif // PACKET_QUEUE_H
